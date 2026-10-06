@@ -594,8 +594,7 @@ if (typeof document !== "undefined") {
   });
 
   // CSV: コートごとに見出し行(コート1 など)を置き、その下に1ラウンド1行で 4人を並べる。最後に休みの人。
-  // コートの行はチーム名(A・B)を付けず番号だけを出し、AのペアとBのペアの間を1セル空ける。
-  // 休みの行は A1・B3 のようにチーム名を付け、間は空けない。
+  // チーム名(A・B)は付けず番号だけを出し、Aチームの人とBチームの人の間を1セル空ける(休みの行も同じ)。
   function buildCsv(d) {
     var num = function (p) { return p < d.nA ? p + 1 : p - d.nA + 1; };
     var split = function (ids) { // "Aの番号…,(空),Bの番号…"
@@ -611,9 +610,7 @@ if (typeof document !== "undefined") {
     // 最後のコートの下に、休みの人を1ラウンド1行で出す(だれも休まない場合は出さない)
     if (d.schedule.some(function (round) { return round.rest.length > 0; })) {
       lines.push("休み");
-      d.schedule.forEach(function (round) {
-        lines.push(round.rest.map(function (p) { return nameOf(d, p); }).join(","));
-      });
+      d.schedule.forEach(function (round) { lines.push(split(round.rest)); });
     }
     return lines.join("\r\n") + "\r\n";
   }
