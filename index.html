@@ -130,6 +130,7 @@
 var WP = 3;  // ペア(味方)の重複の重み
 var WO = 1;  // 対戦相手の重複の重み
 var WC = 2;  // 同じコートに偏ることの重み
+var W1 = 1000; // コート1の使用回数が偏ることの重み(ペア・対戦より常に優先されるよう十分大きくする)
 var MAX_TEAM = 40;
 var MAX_COURTS = 6;
 var MAX_ROUNDS = 100;
@@ -153,7 +154,7 @@ function grid(rows, cols) {
 }
 
 // 状態: ペア回数 P, 対戦回数 O, コート使用回数 K,
-// 評価値 total (= WP*ΣP² + WO*ΣO² + WC*ΣK²、小さいほど均等)
+// 評価値 total (= W1*Σ(コート1の回数)² + WP*ΣP² + WO*ΣO² + WC*ΣK²、小さいほど均等)
 function newState(n, C) {
   return { P: grid(n, n), O: grid(n, n), K: grid(n, C), total: 0 };
 }
@@ -171,7 +172,8 @@ function bump(st, M, a, b, sign, w) {
 
 function bumpK(st, p, k, sign) {
   var c = st.K[p][k];
-  st.total += (sign > 0) ? WC * (2 * c + 1) : -WC * (2 * c - 1);
+  var w = (k === 0) ? W1 + WC : WC;
+  st.total += (sign > 0) ? w * (2 * c + 1) : -w * (2 * c - 1);
   st.K[p][k] = c + sign;
 }
 
@@ -291,25 +293,40 @@ function buildOnce(nA, nB, C, R) {
   return { schedule: schedule, st: st };
 }
 
-// 全体: 時間の許す限り作り直して最良を選び、最後に全ラウンドを通して入れ替えで改善
-function generate(nA, nB, C, R, budgetMs) {
-  budgetMs = budgetMs || 1200;
-  var end = now() + budgetMs * 0.5;
+// 全体: 時間の許す限り作り直して最良を選び、最後に全ラウンドを通して入れ替えで改善する。
+// 長く計算するので、画面が固まらないよう細切れに実行し、進み具合を onProgress(0〜1) で知らせる。
+function pause() { return new Promise(function (resolve) { setTimeout(resolve, 0); }); }
+
+async function generate(nA, nB, C, R, budgetMs, onProgress) {
+  var SLICE = 120; // 1回に続けて計算する時間(ミリ秒)
+  var start = now(), half = budgetMs * 0.5;
+  var report = function () { if (onProgress) onProgress(Math.min(1, (now() - start) / budgetMs)); };
+
   var best = null, tries = 0;
+  var end = start + half;
   do {
-    var cand = buildOnce(nA, nB, C, R);
-    tries++;
-    if (!best || cand.st.total < best.st.total) best = cand;
+    var sliceEnd = Math.min(end, now() + SLICE);
+    do {
+      var cand = buildOnce(nA, nB, C, R);
+      tries++;
+      if (!best || cand.st.total < best.st.total) best = cand;
+    } while (now() < sliceEnd);
+    report();
+    await pause();
   } while (now() < end);
 
   var moves = movesFor(C);
   if (moves.length) {
-    end = now() + budgetMs * 0.5;
-    var iter = 0;
-    while (true) {
-      if ((++iter & 255) === 0 && now() > end) break;
-      var round = best.schedule[Math.floor(Math.random() * R)];
-      tryMove(best.st, round.courts, moves[Math.floor(Math.random() * moves.length)], false);
+    end = now() + half;
+    while (now() < end) {
+      var stop = Math.min(end, now() + SLICE), iter = 0;
+      while (true) {
+        if ((++iter & 255) === 0 && now() > stop) break;
+        var round = best.schedule[Math.floor(Math.random() * R)];
+        tryMove(best.st, round.courts, moves[Math.floor(Math.random() * moves.length)], false);
+      }
+      report();
+      await pause();
     }
   }
 
@@ -344,15 +361,19 @@ function stats(d) {
   for (i = d.nA; i < n; i++) for (j = i + 1; j < n; j++) add(pB, st.P[i][j]);
   for (i = 0; i < d.nA; i++) for (j = d.nA; j < n; j++) add(opp, st.O[i][j]);
   for (i = 0; i < n; i++) add(spread, Math.max.apply(null, st.K[i]) - Math.min.apply(null, st.K[i]));
+  var c1A = {}, c1B = {};
+  for (i = 0; i < d.nA; i++) add(c1A, st.K[i][0]);
+  for (i = d.nA; i < n; i++) add(c1B, st.K[i][0]);
   return { P: st.P, O: st.O, K: st.K, games: games, rests: rests, maxRun: maxRun,
-           pairA: pA, pairB: pB, opp: opp, spread: spread };
+           pairA: pA, pairB: pB, opp: opp, spread: spread, c1A: c1A, c1B: c1B };
 }
 
 /* ===== 画面 ===== */
 
 if (typeof document !== "undefined") {
   var $ = function (id) { return document.getElementById(id); };
-  var STORE_KEY = "tennis-team-match-schedule-v1";
+  var STORE_KEY = "tennis-team-match-schedule-court1-v1";
+  var BUDGET = 12000; // 計算にかける時間(ミリ秒)
   var current = null; // { nA, nB, C, R, schedule, checks }
 
   function el(tag, cls, text) {
@@ -508,6 +529,8 @@ if (typeof document !== "undefined") {
     root.appendChild(el("h2", "", "偏りのチェック"));
     var box = el("div", "card");
     var pairs = function (k) { return k; };
+    box.appendChild(el("div", "dist", "コート1を使う回数 … Aチーム " + distText(s.c1A, "人", times) +
+      " | Bチーム " + distText(s.c1B, "人", times)));
     box.appendChild(el("div", "dist", "Aチーム内で同じ人とペアを組んだ回数 … " + distText(s.pairA, "組", times)));
     box.appendChild(el("div", "dist", "Bチーム内で同じ人とペアを組んだ回数 … " + distText(s.pairB, "組", times)));
     box.appendChild(el("div", "dist", "相手チームの同じ人と対戦した回数 … " + distText(s.opp, "組", times)));
@@ -552,21 +575,22 @@ if (typeof document !== "undefined") {
     if (current && current.checks.some(Boolean) &&
         !window.confirm("いまの組み合わせとチェックを消して、新しく作り直します。よろしいですか?")) return;
 
-    setMsg("計算中…", false);
+    var secs = Math.round(BUDGET / 1000);
+    setMsg("計算中…(約" + secs + "秒かかります)", false);
     $("go").disabled = true;
-    setTimeout(function () {
-      try {
-        var out = generate(nA, nB, C, R, 1200);
-        current = { nA: nA, nB: nB, C: C, R: R, schedule: out.schedule, checks: [] };
-        var saved = save();
-        render();
-        setMsg("作成しました(" + out.tries + " 通りの案から最良のものを選択)。もう一度「決定」を押すと別の案を作ります。" +
-          (saved ? "" : " ※このブラウザでは保存できないため、再読み込みすると消えます。"), false);
-      } catch (e) {
-        setMsg("エラーが発生しました: " + e.message, true);
-      }
+    generate(nA, nB, C, R, BUDGET, function (f) {
+      setMsg("計算中… " + Math.floor(f * 100) + "%(約" + secs + "秒かかります)", false);
+    }).then(function (out) {
+      current = { nA: nA, nB: nB, C: C, R: R, schedule: out.schedule, checks: [] };
+      var saved = save();
+      render();
+      setMsg("作成しました(" + out.tries + " 通りの案から最良のものを選択)。もう一度「決定」を押すと別の案を作ります。" +
+        (saved ? "" : " ※このブラウザでは保存できないため、再読み込みすると消えます。"), false);
+    }).catch(function (e) {
+      setMsg("エラーが発生しました: " + e.message, true);
+    }).then(function () {
       $("go").disabled = false;
-    }, 30);
+    });
   });
 
   $("print").addEventListener("click", function () { window.print(); });
