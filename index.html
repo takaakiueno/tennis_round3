@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>テニス ダブルス対抗戦 組み合わせ表</title>
+<style>
+  :root {
+    --bg: #f4f6f1;
+    --card: #ffffff;
+    --ink: #1d2a22;
+    --sub: #5d6b62;
+    --line: #dfe5dc;
+    --accent: #2f7a4f;
+    --accent-ink: #ffffff;
+    --soft: #e9f2ec;
+    --warn: #b3402e;
+    --a: #1f5f99;
+    --b: #a8501c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Hiragino Sans", "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
+    line-height: 1.6;
+  }
+  main { max-width: 1040px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 22px; margin: 0 0 16px; }
+  h2 { font-size: 17px; margin: 32px 0 12px; }
+  h3 { font-size: 14px; margin: 16px 0 6px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  #form { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; }
+  label.field { display: flex; flex-direction: column; font-size: 13px; color: var(--sub); gap: 4px; }
+  input[type=number] {
+    font: inherit;
+    font-size: 16px;
+    color: var(--ink);
+    padding: 8px 10px;
+    width: 104px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #fff;
+  }
+  input[type=checkbox] { width: 18px; height: 18px; margin: 0; vertical-align: middle; cursor: pointer; accent-color: var(--accent); }
+  button {
+    font: inherit;
+    font-size: 16px;
+    padding: 9px 22px;
+    border-radius: 6px;
+    border: 1px solid var(--accent);
+    background: var(--accent);
+    color: var(--accent-ink);
+    cursor: pointer;
+  }
+  button.sub { background: #fff; color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  #msg { margin-top: 12px; font-size: 14px; min-height: 1.6em; }
+  #msg.error { color: var(--warn); }
+
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+  th, td { border: 1px solid var(--line); padding: 3px 7px; text-align: center; white-space: nowrap; }
+  th { background: var(--soft); font-weight: 600; }
+  td.self { background: #f0f0f0; }
+  .ta { color: var(--a); }
+  .tb { color: var(--b); }
+  .dist { font-size: 14px; margin: 4px 0; }
+  .note { font-size: 13px; color: var(--sub); margin: 4px 0 0; }
+  .inner h3:first-child { margin-top: 0; }
+
+  table.sched { font-size: 15px; }
+  table.sched th, table.sched td { padding: 4px 12px; }
+  table.sched td.game { font-weight: 600; }
+  table.sched .vs { color: var(--sub); font-weight: 400; margin: 0 8px; }
+  table.sched td.restcell { text-align: left; }
+  table.sched td.restcell .ta, table.sched td.restcell .tb { opacity: .8; }
+  table.sched tr.alt td { background: #fafbf9; }
+  table.sched td.chk { padding: 4px 8px; }
+  table.sched tr.done td.game, table.sched tr.done td.restcell { font-weight: 400; }
+  table.sched tr.done td.game span, table.sched tr.done td.restcell span { color: #a9b3ac; }
+
+  @media print {
+    body { background: #fff; }
+    .noprint { display: none !important; }
+    .card { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>テニス ダブルス対抗戦 組み合わせ表</h1>
+
+  <div class="card noprint">
+    <form id="form">
+      <label class="field">Aチームの人数
+        <input id="nA" type="number" min="2" max="40" value="10">
+      </label>
+      <label class="field">Bチームの人数
+        <input id="nB" type="number" min="2" max="40" value="10">
+      </label>
+      <label class="field">使用コート数
+        <input id="courts" type="number" min="1" max="6" value="4">
+      </label>
+      <label class="field">ラウンド数
+        <input id="rounds" type="number" min="1" max="100" value="30">
+      </label>
+      <button id="go" type="submit">決定</button>
+      <button id="print" type="button" class="sub" hidden>印刷</button>
+    </form>
+    <div id="msg"></div>
+  </div>
+
+  <div id="result"></div>
+</main>
+
+<script>
+"use strict";
+
+/* ===== 組み合わせ生成ロジック =====
+   選手は通し番号で扱う: Aチーム 0..nA-1、Bチーム nA..nA+nB-1
+   1試合 = [a1, a2, b1, b2] (Aのペア 対 Bのペア)。courts[k] がコート k+1 の試合。 */
+
+var WP = 3;  // ペア(味方)の重複の重み
+var WO = 1;  // 対戦相手の重複の重み
+var WC = 2;  // 同じコートに偏ることの重み
+var MAX_TEAM = 40;
+var MAX_COURTS = 6;
+var MAX_ROUNDS = 100;
+
+function now() {
+  return (typeof performance !== "undefined") ? performance.now() : Date.now();
+}
+
+function shuffle(a) {
+  for (var i = a.length - 1; i > 0; i--) {
+    var j = Math.floor(Math.random() * (i + 1));
+    var t = a[i]; a[i] = a[j]; a[j] = t;
+  }
+  return a;
+}
+
+function grid(rows, cols) {
+  var m = [];
+  for (var i = 0; i < rows; i++) m.push(new Array(cols).fill(0));
+  return m;
+}
+
+// 状態: ペア回数 P, 対戦回数 O, コート使用回数 K,
+// 評価値 total (= WP*ΣP² + WO*ΣO² + WC*ΣK²、小さいほど均等)
+function newState(n, C) {
+  return { P: grid(n, n), O: grid(n, n), K: grid(n, C), total: 0 };
+}
+
+function cloneState(st) {
+  var cp = function (m) { return m.map(function (r) { return r.slice(); }); };
+  return { P: cp(st.P), O: cp(st.O), K: cp(st.K), total: st.total };
+}
+
+function bump(st, M, a, b, sign, w) {
+  var c = M[a][b];
+  st.total += (sign > 0) ? w * (2 * c + 1) : -w * (2 * c - 1);
+  M[a][b] = M[b][a] = c + sign;
+}
+
+function bumpK(st, p, k, sign) {
+  var c = st.K[p][k];
+  st.total += (sign > 0) ? WC * (2 * c + 1) : -WC * (2 * c - 1);
+  st.K[p][k] = c + sign;
+}
+
+function applyCourt(st, m, k, sign) {
+  bump(st, st.P, m[0], m[1], sign, WP);
+  bump(st, st.P, m[2], m[3], sign, WP);
+  bump(st, st.O, m[0], m[2], sign, WO);
+  bump(st, st.O, m[0], m[3], sign, WO);
+  bump(st, st.O, m[1], m[2], sign, WO);
+  bump(st, st.O, m[1], m[3], sign, WO);
+  bumpK(st, m[0], k, sign);
+  bumpK(st, m[1], k, sign);
+  bumpK(st, m[2], k, sign);
+  bumpK(st, m[3], k, sign);
+}
+
+function applyRound(st, round, sign) {
+  for (var k = 0; k < round.courts.length; k++) applyCourt(st, round.courts[k], k, sign);
+}
+
+// 1ラウンド内でできる入れ替えの一覧(どれも2回やると元に戻る)
+//  type 0: 同じチームの2人を、別々のコートの間で入れ替える
+//  type 1: 2つの試合のコートを入れ替える
+//  type 2: 2つのコートの間でBのペアを入れ替える(対戦相手が変わる)
+var moveCache = {};
+function movesFor(C) {
+  if (moveCache[C]) return moveCache[C];
+  var list = [];
+  for (var k = 0; k < C; k++) for (var l = k + 1; l < C; l++) {
+    for (var t = 0; t < 2; t++) for (var i = 0; i < 2; i++) for (var j = 0; j < 2; j++) {
+      list.push({ type: 0, k: k, l: l, i: t * 2 + i, j: t * 2 + j });
+    }
+    list.push({ type: 1, k: k, l: l });
+    list.push({ type: 2, k: k, l: l });
+  }
+  moveCache[C] = list;
+  return list;
+}
+
+function doMove(st, courts, mv) {
+  var a = courts[mv.k], b = courts[mv.l], t;
+  applyCourt(st, a, mv.k, -1);
+  applyCourt(st, b, mv.l, -1);
+  if (mv.type === 0) {
+    t = a[mv.i]; a[mv.i] = b[mv.j]; b[mv.j] = t;
+  } else if (mv.type === 1) {
+    courts[mv.k] = b; courts[mv.l] = a;
+  } else {
+    t = a[2]; a[2] = b[2]; b[2] = t;
+    t = a[3]; a[3] = b[3]; b[3] = t;
+  }
+  applyCourt(st, courts[mv.k], mv.k, 1);
+  applyCourt(st, courts[mv.l], mv.l, 1);
+}
+
+// 入れ替えを試し、良くなれば(strict でなければ悪くならなければ)採用する
+function tryMove(st, courts, mv, strict) {
+  var before = st.total;
+  doMove(st, courts, mv);
+  if (strict ? st.total >= before : st.total > before) {
+    doMove(st, courts, mv);
+    return false;
+  }
+  return true;
+}
+
+// 出場者を適当に並べてから、良くなる入れ替えがなくなるまで繰り返す
+function buildRound(st, selA, selB, C) {
+  var courts = [];
+  for (var k = 0; k < C; k++) {
+    courts.push([selA[2 * k], selA[2 * k + 1], selB[2 * k], selB[2 * k + 1]]);
+    applyCourt(st, courts[k], k, 1);
+  }
+  var moves = movesFor(C).slice();
+  var improved = moves.length > 0;
+  while (improved) {
+    improved = false;
+    shuffle(moves);
+    for (var i = 0; i < moves.length; i++) {
+      if (tryMove(st, courts, moves[i], true)) improved = true;
+    }
+  }
+  return courts;
+}
+
+// チームごとに出場者を選ぶ。まず出場数が少ない人を優先し、同数なら休みで決める(残る同順位はランダム)。
+//  ・休む人数が出場人数以下のチーム: 前のラウンドで休んだ人を必ず出す(連続休みなし)。
+//    それ以外は順位を付けないので、毎回ちがう顔ぶれになりやすい。
+//  ・休む人数のほうが多いチーム: 連続休みは避けられないので、休みが長い人から順に出す。
+function pick(ids, need, games, last, r) {
+  var order = shuffle(ids.slice());
+  var loose = ids.length <= 2 * need;
+  order.sort(function (a, b) {
+    if (games[a] !== games[b]) return games[a] - games[b];
+    if (!loose) return last[a] - last[b];
+    return (last[a] === r - 1 ? 1 : 0) - (last[b] === r - 1 ? 1 : 0);
+  });
+  var sel = shuffle(order.slice(0, need));
+  var rest = order.slice(need).sort(function (a, b) { return a - b; });
+  for (var s = 0; s < sel.length; s++) { games[sel[s]]++; last[sel[s]] = r; }
+  return { sel: sel, rest: rest };
+}
+
+function buildOnce(nA, nB, C, R) {
+  var n = nA + nB;
+  var st = newState(n, C);
+  var games = new Array(n).fill(0), last = new Array(n).fill(-1);
+  var idsA = [], idsB = [], i;
+  for (i = 0; i < nA; i++) idsA.push(i);
+  for (i = 0; i < nB; i++) idsB.push(nA + i);
+  var schedule = [];
+  for (var r = 0; r < R; r++) {
+    var a = pick(idsA, 2 * C, games, last, r);
+    var b = pick(idsB, 2 * C, games, last, r);
+    schedule.push({ courts: buildRound(st, a.sel, b.sel, C), rest: a.rest.concat(b.rest) });
+  }
+  return { schedule: schedule, st: st };
+}
+
+// 全体: 時間の許す限り作り直して最良を選び、最後に全ラウンドを通して入れ替えで改善
+function generate(nA, nB, C, R, budgetMs) {
+  budgetMs = budgetMs || 1200;
+  var end = now() + budgetMs * 0.5;
+  var best = null, tries = 0;
+  do {
+    var cand = buildOnce(nA, nB, C, R);
+    tries++;
+    if (!best || cand.st.total < best.st.total) best = cand;
+  } while (now() < end);
+
+  var moves = movesFor(C);
+  if (moves.length) {
+    end = now() + budgetMs * 0.5;
+    var iter = 0;
+    while (true) {
+      if ((++iter & 255) === 0 && now() > end) break;
+      var round = best.schedule[Math.floor(Math.random() * R)];
+      tryMove(best.st, round.courts, moves[Math.floor(Math.random() * moves.length)], false);
+    }
+  }
+
+  // 表示用: ペア内は番号順に
+  best.schedule.forEach(function (round) {
+    round.courts.forEach(function (m) {
+      var t;
+      if (m[0] > m[1]) { t = m[0]; m[0] = m[1]; m[1] = t; }
+      if (m[2] > m[3]) { t = m[2]; m[2] = m[3]; m[3] = t; }
+    });
+  });
+  return { schedule: best.schedule, tries: tries };
+}
+
+function stats(d) {
+  var n = d.nA + d.nB;
+  var st = newState(n, d.C);
+  var games = new Array(n).fill(0), rests = new Array(n).fill(0);
+  var maxRun = new Array(n).fill(0), run = new Array(n).fill(0);
+  d.schedule.forEach(function (round) {
+    applyRound(st, round, 1);
+    var playing = new Array(n).fill(false);
+    round.courts.forEach(function (m) { m.forEach(function (p) { games[p]++; playing[p] = true; }); });
+    for (var p = 0; p < n; p++) {
+      if (playing[p]) run[p] = 0;
+      else { rests[p]++; run[p]++; if (run[p] > maxRun[p]) maxRun[p] = run[p]; }
+    }
+  });
+  var pA = {}, pB = {}, opp = {}, spread = {}, i, j;
+  var add = function (o, v) { o[v] = (o[v] || 0) + 1; };
+  for (i = 0; i < d.nA; i++) for (j = i + 1; j < d.nA; j++) add(pA, st.P[i][j]);
+  for (i = d.nA; i < n; i++) for (j = i + 1; j < n; j++) add(pB, st.P[i][j]);
+  for (i = 0; i < d.nA; i++) for (j = d.nA; j < n; j++) add(opp, st.O[i][j]);
+  for (i = 0; i < n; i++) add(spread, Math.max.apply(null, st.K[i]) - Math.min.apply(null, st.K[i]));
+  return { P: st.P, O: st.O, K: st.K, games: games, rests: rests, maxRun: maxRun,
+           pairA: pA, pairB: pB, opp: opp, spread: spread };
+}
+
+/* ===== 画面 ===== */
+
+if (typeof document !== "undefined") {
+  var $ = function (id) { return document.getElementById(id); };
+  var STORE_KEY = "tennis-team-match-schedule-v1";
+  var current = null; // { nA, nB, C, R, schedule, checks }
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  function nameOf(d, p) { return p < d.nA ? "A" + (p + 1) : "B" + (p - d.nA + 1); }
+  function clsOf(d, p) { return p < d.nA ? "ta" : "tb"; }
+
+  function save() {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(current)); return true; }
+    catch (e) { return false; }
+  }
+
+  function load() {
+    try {
+      var d = JSON.parse(localStorage.getItem(STORE_KEY));
+      if (!d || !Array.isArray(d.schedule) || d.schedule.length !== d.R) return null;
+      if (!(d.nA >= 2 && d.nB >= 2 && d.C >= 1)) return null;
+      if (!Array.isArray(d.checks)) d.checks = [];
+      var n = d.nA + d.nB;
+      var okId = function (p) { return Number.isInteger(p) && p >= 0 && p < n; };
+      var ok = d.schedule.every(function (round) {
+        return round && Array.isArray(round.rest) && round.rest.every(okId) &&
+          Array.isArray(round.courts) && round.courts.length === d.C &&
+          round.courts.every(function (m) {
+            return Array.isArray(m) && m.length === 4 && m.every(okId) &&
+              m[0] < d.nA && m[1] < d.nA && m[2] >= d.nA && m[3] >= d.nA;
+          });
+      });
+      return ok ? d : null;
+    } catch (e) { return null; }
+  }
+
+  function distText(dist, unit, keyLabel) {
+    var keys = Object.keys(dist).map(Number).sort(function (a, b) { return a - b; });
+    if (!keys.length) return "―";
+    return keys.map(function (k) { return keyLabel(k) + ": " + dist[k] + unit; }).join(" / ");
+  }
+  var times = function (k) { return k + "回"; };
+
+  function setMsg(text, isError) {
+    $("msg").textContent = text;
+    $("msg").className = isError ? "error" : "";
+  }
+
+  // 「A1・A3」のように、チームの色を付けて並べる
+  function appendNames(parent, d, ids, sep) {
+    ids.forEach(function (p, i) {
+      if (i) parent.appendChild(document.createTextNode(sep));
+      parent.appendChild(el("span", clsOf(d, p), nameOf(d, p)));
+    });
+  }
+
+  function teamTable(d, s, from, to) {
+    var tbl = el("table");
+    var rows = [["番号"], ["試合数"], ["休み"], ["連続休み(最大)"]];
+    for (var k = 0; k < d.C; k++) rows.push(["コート" + (k + 1)]);
+    for (var p = from; p < to; p++) {
+      rows[0].push(nameOf(d, p));
+      rows[1].push(s.games[p]);
+      rows[2].push(s.rests[p]);
+      rows[3].push(s.maxRun[p]);
+      for (k = 0; k < d.C; k++) rows[4 + k].push(s.K[p][k]);
+    }
+    rows.forEach(function (cells, ri) {
+      var tr = el("tr");
+      cells.forEach(function (v, ci) {
+        var cell = el(ri === 0 || ci === 0 ? "th" : "td", "", v);
+        if (ri === 0 && ci > 0) cell.className = clsOf(d, from);
+        tr.appendChild(cell);
+      });
+      tbl.appendChild(tr);
+    });
+    var wrap = el("div", "scroll");
+    wrap.appendChild(tbl);
+    return wrap;
+  }
+
+  function matrixTable(d, M, rowFrom, rowTo, colFrom, colTo) {
+    var tbl = el("table");
+    var head = el("tr");
+    head.appendChild(el("th", "", ""));
+    for (var j = colFrom; j < colTo; j++) head.appendChild(el("th", clsOf(d, j), nameOf(d, j)));
+    tbl.appendChild(head);
+    for (var i = rowFrom; i < rowTo; i++) {
+      var tr = el("tr");
+      tr.appendChild(el("th", clsOf(d, i), nameOf(d, i)));
+      for (j = colFrom; j < colTo; j++) {
+        tr.appendChild(i === j ? el("td", "self", "") : el("td", "", M[i][j]));
+      }
+      tbl.appendChild(tr);
+    }
+    var wrap = el("div", "scroll");
+    wrap.appendChild(tbl);
+    return wrap;
+  }
+
+  function render() {
+    var d = current, n = d.nA + d.nB;
+    var root = $("result");
+    root.textContent = "";
+
+    root.appendChild(el("h2", "", "組み合わせ(A " + d.nA + "人・B " + d.nB + "人・" + d.C + "面・" + d.R + "ラウンド)"));
+    var hasRest = d.schedule.some(function (round) { return round.rest.length > 0; });
+    var sched = el("table", "sched");
+    var hr = el("tr");
+    hr.appendChild(el("th", "", ""));
+    hr.appendChild(el("th", "", "R"));
+    for (var c = 0; c < d.C; c++) hr.appendChild(el("th", "", "コート" + (c + 1)));
+    if (hasRest) hr.appendChild(el("th", "", "休み"));
+    sched.appendChild(hr);
+
+    d.schedule.forEach(function (round, r) {
+      var tr = el("tr", r % 2 === 0 ? "alt" : "");
+      var chkCell = el("td", "chk");
+      var chk = el("input");
+      chk.type = "checkbox";
+      chk.setAttribute("aria-label", "第" + (r + 1) + "ラウンド");
+      chk.checked = !!d.checks[r];
+      tr.classList.toggle("done", chk.checked);
+      chk.addEventListener("change", function () {
+        tr.classList.toggle("done", chk.checked);
+        d.checks[r] = chk.checked;
+        save();
+      });
+      chkCell.appendChild(chk);
+      tr.appendChild(chkCell);
+      tr.appendChild(el("th", "", r + 1));
+      round.courts.forEach(function (m) {
+        var td = el("td", "game");
+        appendNames(td, d, [m[0], m[1]], "・");
+        td.appendChild(el("span", "vs", "-"));
+        appendNames(td, d, [m[2], m[3]], "・");
+        tr.appendChild(td);
+      });
+      if (hasRest) {
+        var rc = el("td", "restcell");
+        appendNames(rc, d, round.rest, ", ");
+        tr.appendChild(rc);
+      }
+      sched.appendChild(tr);
+    });
+    var schedWrap = el("div", "card scroll");
+    schedWrap.appendChild(sched);
+    root.appendChild(schedWrap);
+
+    // --- 偏りのチェック ---
+    var s = stats(d);
+    root.appendChild(el("h2", "", "偏りのチェック"));
+    var box = el("div", "card");
+    var pairs = function (k) { return k; };
+    box.appendChild(el("div", "dist", "Aチーム内で同じ人とペアを組んだ回数 … " + distText(s.pairA, "組", times)));
+    box.appendChild(el("div", "dist", "Bチーム内で同じ人とペアを組んだ回数 … " + distText(s.pairB, "組", times)));
+    box.appendChild(el("div", "dist", "相手チームの同じ人と対戦した回数 … " + distText(s.opp, "組", times)));
+    box.appendChild(el("div", "dist", "コートの偏り(各人の最多コートと最少コートの回数差) … " +
+      distText(s.spread, "人", function (k) { return "差" + k; })));
+
+    box.appendChild(el("h3", "ta", "Aチーム"));
+    box.appendChild(teamTable(d, s, 0, d.nA));
+    box.appendChild(el("h3", "tb", "Bチーム"));
+    box.appendChild(teamTable(d, s, d.nA, n));
+    box.appendChild(el("p", "note", "「コート1」などの行は、その人がそのコートで試合をする回数です。"));
+
+    root.appendChild(box);
+
+    // --- 全員分の内訳表 ---
+    root.appendChild(el("h2", "", "全員分の内訳表(ペア回数 / 対戦回数)"));
+    var det = el("div", "card inner");
+    det.appendChild(el("h3", "", "Aチーム内のペア回数"));
+    det.appendChild(matrixTable(d, s.P, 0, d.nA, 0, d.nA));
+    det.appendChild(el("h3", "", "Bチーム内のペア回数"));
+    det.appendChild(matrixTable(d, s.P, d.nA, n, d.nA, n));
+    det.appendChild(el("h3", "", "対戦回数(縦: Aチーム / 横: Bチーム)"));
+    det.appendChild(matrixTable(d, s.O, 0, d.nA, d.nA, n));
+    root.appendChild(det);
+
+    $("print").hidden = false;
+  }
+
+  $("form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var nA = parseInt($("nA").value, 10);
+    var nB = parseInt($("nB").value, 10);
+    var C = parseInt($("courts").value, 10);
+    var R = parseInt($("rounds").value, 10);
+    if (!(C >= 1 && C <= MAX_COURTS)) { setMsg("使用コート数は 1〜" + MAX_COURTS + " にしてください。", true); return; }
+    if (!(nA >= 2 * C) || !(nB >= 2 * C)) {
+      setMsg("各チームの人数は " + (2 * C) + " 人以上(コート数×2以上)にしてください。", true); return;
+    }
+    if (nA > MAX_TEAM || nB > MAX_TEAM) { setMsg("各チームの人数は " + MAX_TEAM + " 人以下にしてください。", true); return; }
+    if (Math.abs(nA - nB) > 2) { setMsg("AチームとBチームの人数差は 2 人以内にしてください。", true); return; }
+    if (!(R >= 1 && R <= MAX_ROUNDS)) { setMsg("ラウンド数は 1〜" + MAX_ROUNDS + " にしてください。", true); return; }
+    if (current && current.checks.some(Boolean) &&
+        !window.confirm("いまの組み合わせとチェックを消して、新しく作り直します。よろしいですか?")) return;
+
+    setMsg("計算中…", false);
+    $("go").disabled = true;
+    setTimeout(function () {
+      try {
+        var out = generate(nA, nB, C, R, 1200);
+        current = { nA: nA, nB: nB, C: C, R: R, schedule: out.schedule, checks: [] };
+        var saved = save();
+        render();
+        setMsg("作成しました(" + out.tries + " 通りの案から最良のものを選択)。もう一度「決定」を押すと別の案を作ります。" +
+          (saved ? "" : " ※このブラウザでは保存できないため、再読み込みすると消えます。"), false);
+      } catch (e) {
+        setMsg("エラーが発生しました: " + e.message, true);
+      }
+      $("go").disabled = false;
+    }, 30);
+  });
+
+  $("print").addEventListener("click", function () { window.print(); });
+
+  // 前回の組み合わせとチェックを復元
+  current = load();
+  if (current) {
+    $("nA").value = current.nA;
+    $("nB").value = current.nB;
+    $("courts").value = current.C;
+    $("rounds").value = current.R;
+    render();
+    setMsg("前回の組み合わせを表示しています。「決定」を押すと新しく作り直します。", false);
+  }
+}
+</script>
+</body>
+</html>
