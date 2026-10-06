@@ -34,10 +34,15 @@ AチームとBチームの人数差は 2 人以内にしてください。
 
 1ラウンドが1行です。
 
-| | R | コート1 | コート2 | 休み |
-|---|---|---|---|---|
-| ☐ | 1 | A2・A7 - B3・B4 | A4・A5 - B1・B2 | A1, A3, A6, B5, B6 |
-| ☐ | 2 | A1・A6 - B1・B6 | A3・A4 - B3・B5 | A2, A5, A7, B2, B4 |
+<table>
+<thead>
+<tr><th nowrap></th><th nowrap>R</th><th nowrap>コート1</th><th nowrap>コート2</th><th nowrap>休み</th></tr>
+</thead>
+<tbody>
+<tr><td nowrap>☐</td><td nowrap>1</td><td nowrap>A2&#8288;・&#8288;A7&nbsp;-&nbsp;B3&#8288;・&#8288;B4</td><td nowrap>A4&#8288;・&#8288;A5&nbsp;-&nbsp;B1&#8288;・&#8288;B2</td><td nowrap>A1,&nbsp;A3,&nbsp;A6,&nbsp;B5,&nbsp;B6</td></tr>
+<tr><td nowrap>☐</td><td nowrap>2</td><td nowrap>A1&#8288;・&#8288;A6&nbsp;-&nbsp;B1&#8288;・&#8288;B6</td><td nowrap>A3&#8288;・&#8288;A4&nbsp;-&nbsp;B3&#8288;・&#8288;B5</td><td nowrap>A2,&nbsp;A5,&nbsp;A7,&nbsp;B2,&nbsp;B4</td></tr>
+</tbody>
+</table>
 
 - `A2・A7 - B3・B4` は「A2 と A7 のペア」対「B3 と B4 のペア」の試合です。左がAチーム、右がBチームです。
 - 画面では、Aチームの選手を青、Bチームの選手を橙で色分けしています。
