@@ -112,7 +112,7 @@
         <input id="rounds" type="number" min="1" max="100" value="30">
       </label>
       <button id="go" type="submit">決定</button>
-      <button id="print" type="button" class="sub" hidden>印刷</button>
+      <button id="csv" type="button" class="sub" hidden>csv出力</button>
     </form>
     <div id="msg"></div>
   </div>
@@ -556,7 +556,7 @@ if (typeof document !== "undefined") {
     det.appendChild(matrixTable(d, s.O, 0, d.nA, d.nA, n));
     root.appendChild(det);
 
-    $("print").hidden = false;
+    $("csv").hidden = false;
   }
 
   $("form").addEventListener("submit", function (ev) {
@@ -593,7 +593,38 @@ if (typeof document !== "undefined") {
     });
   });
 
-  $("print").addEventListener("click", function () { window.print(); });
+  // CSV: コートごとに見出し行(コート1 など)を置き、その下に1ラウンド1行で 4人を並べる。最後に休みの人
+  function buildCsv(d) {
+    var lines = [];
+    for (var k = 0; k < d.C; k++) {
+      lines.push("コート" + (k + 1));
+      d.schedule.forEach(function (round) {
+        lines.push(round.courts[k].map(function (p) { return nameOf(d, p); }).join(","));
+      });
+    }
+    // 最後のコートの下に、休みの人を同じく1ラウンド1行で出す(だれも休まない場合は出さない)
+    if (d.schedule.some(function (round) { return round.rest.length > 0; })) {
+      lines.push("休み");
+      d.schedule.forEach(function (round) {
+        lines.push(round.rest.map(function (p) { return nameOf(d, p); }).join(","));
+      });
+    }
+    return lines.join("\r\n") + "\r\n";
+  }
+
+  $("csv").addEventListener("click", function () {
+    if (!current) return;
+    // 先頭の BOM は、Excel で開いたときに日本語が文字化けしないようにするため
+    var blob = new Blob(["\uFEFF" + buildCsv(current)], { type: "text/csv;charset=utf-8" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = "tennis_taikousen.csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  });
 
   // 前回の組み合わせとチェックを復元
   current = load();
