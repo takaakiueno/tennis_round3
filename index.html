@@ -112,6 +112,7 @@
         <input id="rounds" type="number" min="1" max="100" value="30">
       </label>
       <button id="go" type="submit">決定</button>
+      <button id="share" type="button" class="sub" disabled>共有リンクをコピー</button>
       <button id="csv" type="button" class="sub" hidden>csv出力</button>
     </form>
     <div id="msg"></div>
@@ -377,8 +378,13 @@ if (typeof document !== "undefined") {
   }
 
   function load() {
+    try { return validPlan(JSON.parse(localStorage.getItem(STORE_KEY))); }
+    catch (e) { return null; }
+  }
+
+  // 保存データや共有リンクの中身が、表として正しい形かを確かめる(だめなら null)
+  function validPlan(d) {
     try {
-      var d = JSON.parse(localStorage.getItem(STORE_KEY));
       if (!d || !Array.isArray(d.schedule) || d.schedule.length !== d.R) return null;
       if (!(d.nA >= 2 && d.nB >= 2 && d.C >= 1)) return null;
       if (!Array.isArray(d.checks)) d.checks = [];
@@ -390,7 +396,8 @@ if (typeof document !== "undefined") {
           round.courts.every(function (m) {
             return Array.isArray(m) && m.length === 4 && m.every(okId) &&
               m[0] < d.nA && m[1] < d.nA && m[2] >= d.nA && m[3] >= d.nA;
-          });
+          }) &&
+          new Set([].concat.apply(round.rest, round.courts)).size === round.rest.length + 4 * d.C;
       });
       return ok ? d : null;
     } catch (e) { return null; }
@@ -542,6 +549,7 @@ if (typeof document !== "undefined") {
     root.appendChild(det);
 
     $("csv").hidden = false;
+    $("share").disabled = false;
   }
 
   $("form").addEventListener("submit", function (ev) {
@@ -614,15 +622,172 @@ if (typeof document !== "undefined") {
     setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
   });
 
-  // 前回の組み合わせとチェックを復元
-  current = load();
-  if (current) {
+  /* --- 共有リンク ---
+     表の中身(組み合わせと、リンクを作った時点のチェック)を短い文字列にして URL の # の後ろに付ける。
+     サーバーには何も送らず、URL そのものがデータになる。
+     ・休みの人は入れない(そのラウンドに出ていない人が休み、と受け取った側で復元できる)
+     ・番号はチーム内の番号(0から)を、チームの人数を表せる最小のビット数で詰める
+       (13人なら4ビット、17〜32人なら5ビット…。形式の切り替えはなく、ビット数は人数から決まる)
+     並び: 版(1バイト), Aの人数, Bの人数, 面数, ラウンド数, チェック(1ラウンド1ビット),
+           以降ラウンドごと・コートごとに [Aの2人, Bの2人] を詰めたビット列 */
+  var SHARE_PREFIX = "#s=";
+
+  function bitWidth(count) {
+    var w = 1;
+    while ((1 << w) < count) w++;
+    return w;
+  }
+
+  function encodeShare(d) {
+    var bytes = [1, d.nA, d.nB, d.C, d.R];
+    var acc = 0, nbits = 0;
+    var put = function (value, width) {
+      for (var i = width - 1; i >= 0; i--) {
+        acc = (acc << 1) | ((value >> i) & 1);
+        if (++nbits === 8) { bytes.push(acc); acc = 0; nbits = 0; }
+      }
+    };
+    for (var r = 0; r < d.R; r++) put(d.checks[r] ? 1 : 0, 1);
+    var wA = bitWidth(d.nA), wB = bitWidth(d.nB);
+    d.schedule.forEach(function (round) {
+      round.courts.forEach(function (m) {
+        put(m[0], wA); put(m[1], wA);
+        put(m[2] - d.nA, wB); put(m[3] - d.nA, wB);
+      });
+    });
+    if (nbits > 0) bytes.push(acc << (8 - nbits));
+    var bin = "";
+    bytes.forEach(function (x) { bin += String.fromCharCode(x); });
+    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  function decodeShare(text) {
+    try {
+      var bin = atob(text.replace(/-/g, "+").replace(/_/g, "/"));
+      if (bin.length < 5 || bin.charCodeAt(0) !== 1) return null;
+      var d = { nA: bin.charCodeAt(1), nB: bin.charCodeAt(2), C: bin.charCodeAt(3), R: bin.charCodeAt(4) };
+      if (!(d.nA >= 2 && d.nB >= 2 && d.C >= 1 && d.R >= 1)) return null;
+      var pos = 5, bit = 0;
+      var get = function (width) {
+        var v = 0;
+        for (var i = 0; i < width; i++) {
+          if (pos >= bin.length) throw new Error("short");
+          v = (v << 1) | ((bin.charCodeAt(pos) >> (7 - bit)) & 1);
+          if (++bit === 8) { bit = 0; pos++; }
+        }
+        return v;
+      };
+      d.checks = [];
+      for (var r = 0; r < d.R; r++) d.checks.push(get(1) === 1);
+      var wA = bitWidth(d.nA), wB = bitWidth(d.nB);
+      d.schedule = [];
+      for (r = 0; r < d.R; r++) {
+        var courts = [], playing = {};
+        for (var k = 0; k < d.C; k++) {
+          var m = [get(wA), get(wA), d.nA + get(wB), d.nA + get(wB)];
+          m.forEach(function (p) { playing[p] = true; });
+          courts.push(m);
+        }
+        var rest = []; // 出ていない人が休み(Aチーム、Bチームの順に番号順)
+        for (var p = 0; p < d.nA + d.nB; p++) if (!playing[p]) rest.push(p);
+        d.schedule.push({ courts: courts, rest: rest });
+      }
+      if (bin.length - pos > 1) return null; // 余分なデータがある
+      return validPlan(d);
+    } catch (e) { return null; }
+  }
+
+  // チェック以外(組み合わせ)が同じ表かどうか
+  function samePlan(a, b) {
+    var key = function (d) {
+      return JSON.stringify([d.nA, d.nB, d.C, d.R, d.schedule.map(function (r) { return r.courts; })]);
+    };
+    return key(a) === key(b);
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).catch(function () { return legacyCopy(text); });
+    }
+    return legacyCopy(text);
+  }
+
+  function legacyCopy(text) {
+    return new Promise(function (resolve, reject) {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+      ta.remove();
+      if (ok) resolve(); else reject(new Error("copy failed"));
+    });
+  }
+
+  $("share").addEventListener("click", function () {
+    if (!current) return;
+    var url = location.href.split("#")[0] + SHARE_PREFIX + encodeShare(current);
+    copyText(url).then(function () {
+      setMsg("共有リンクをコピーしました。LINE やメールに貼り付けて送ってください。" +
+        "表を作り直したときは、もう一度コピーして送り直してください。", false);
+    }, function () {
+      window.prompt("自動でコピーできませんでした。下のリンクをコピーして送ってください。", url);
+    });
+  });
+
+  function showPlan() {
     $("nA").value = current.nA;
     $("nB").value = current.nB;
     $("courts").value = current.C;
     $("rounds").value = current.R;
     render();
-    setMsg("前回の組み合わせを表示しています。「決定」を押すと新しく作り直します。", false);
+  }
+
+  // URL に共有リンクのデータが付いていれば取り込む。取り込んだら true。
+  function importFromHash() {
+    if (location.hash.indexOf(SHARE_PREFIX) !== 0) return false;
+    var shared = decodeShare(location.hash.slice(SHARE_PREFIX.length));
+    // 取り込んだあとは URL からデータを外す(再読み込みで手元のチェックが巻き戻らないように)
+    try { history.replaceState(null, "", location.href.split("#")[0]); }
+    catch (e) { try { location.hash = ""; } catch (e2) { /* 何もしない */ } }
+
+    if (!shared) {
+      setMsg("共有リンクを読み取れませんでした。リンクが途中で切れていないか確認してください。", true);
+      return false;
+    }
+    var local = load();
+    if (local && samePlan(local, shared)) {
+      // 同じ表をもう一度開いただけ: この端末で付けたチェックを残す
+      current = local;
+      showPlan();
+      setMsg("共有された組み合わせを表示しています(この端末で付けたチェックはそのままです)。", false);
+      return true;
+    }
+    if (local && !window.confirm("共有リンクの組み合わせを開きます。\nこの端末に保存されている今の表は置き換えられます。よろしいですか?")) {
+      return false;
+    }
+    current = shared;
+    var saved = save();
+    showPlan();
+    setMsg("共有された組み合わせを表示しています。" +
+      (saved ? "" : " ※このブラウザでは保存できないため、再読み込みすると消えます。"), false);
+    return true;
+  }
+
+  window.addEventListener("hashchange", function () { importFromHash(); });
+
+  // 共有リンク、なければ前回の組み合わせとチェックを復元
+  if (!importFromHash()) {
+    var keepMsg = $("msg").textContent; // 共有リンクの読み取りエラーが出ていれば残す
+    current = load();
+    if (current) {
+      showPlan();
+      if (!keepMsg) setMsg("前回の組み合わせを表示しています。「決定」を押すと新しく作り直します。", false);
+    }
   }
 }
 </script>
