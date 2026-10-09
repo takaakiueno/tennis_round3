@@ -74,6 +74,7 @@
   .dist { font-size: 14px; margin: 4px 0; }
   .note { font-size: 13px; color: var(--sub); margin: 4px 0 0; }
   .inner h3:first-child { margin-top: 0; }
+  .notice { margin-top: 16px; background: #fff8e6; border-color: #f0dca8; font-size: 14px; }
 
   table.sched { font-size: 15px; }
   table.sched th, table.sched td { padding: 4px 12px; }
@@ -117,6 +118,8 @@
     </form>
     <div id="msg"></div>
   </div>
+
+  <div id="notice" class="card notice" hidden>※チームの人数がコート数×2の倍数のため、同じ顔ぶればかりにならないよう、一部の人の休みを不公平が出ないロジックで1ラウンド長くしています。</div>
 
   <div id="result"></div>
 </main>
@@ -260,11 +263,43 @@ function buildRound(st, selA, selB, C) {
   return courts;
 }
 
+// チームの人数が「そのチームから1ラウンドに出る人数(コート数×2)」のちょうど k 倍(k は2以上)のとき、
+// 全員の休みの間隔をそろえると k ラウンドごとに同じ顔ぶれが出るだけになる(顔ぶれの固定)。
+// これを防ぐため、毎ラウンド1人だけ、試合数が同じ「出る予定の人」と「休む予定の人」を入れ替える。
+// 入れ替えで休みが延びるのは1ラウンドまで(連続休みは最長でも k ラウンド)。
+// 延びる役は、まだ延びたことのない人から順に回す。
+function mixFactor(teamSize, C) {
+  var per = 2 * C;
+  return (teamSize % per === 0 && teamSize / per >= 2) ? teamSize / per : 0;
+}
+
+function mixSwap(sel, rest, games, last, ext, r, k) {
+  var bestO = -1, bestI = -1, bestKey = null, ties = 0;
+  for (var a = 0; a < sel.length; a++) {
+    var o = sel[a];
+    if (last[o] < 0 || r - last[o] > k) continue; // 休みが k ラウンドを超えてしまう人は延ばさない
+    for (var b = 0; b < rest.length; b++) {
+      var i = rest[b];
+      if (games[i] !== games[o]) continue;        // 試合数が同じ人どうしだけ(試合数の差は変わらない)
+      // 優先: 延びたことの少ない人 → 代わりに出る人は前のラウンドに出ていない人 → 休みが長い人
+      var key = [ext[o], last[i] === r - 1 ? 1 : 0, last[i]];
+      var cmp = 0;
+      if (bestKey) for (var x = 0; x < 3 && !cmp; x++) cmp = key[x] - bestKey[x];
+      if (!bestKey || cmp < 0) { bestKey = key; bestO = a; bestI = b; ties = 1; }
+      else if (cmp === 0) { ties++; if (Math.random() * ties < 1) { bestO = a; bestI = b; } }
+    }
+  }
+  if (bestO < 0) return;
+  var t = sel[bestO]; sel[bestO] = rest[bestI]; rest[bestI] = t;
+  ext[t]++;
+  rest.sort(function (p, q) { return p - q; });
+}
+
 // チームごとに出場者を選ぶ。まず出場数が少ない人を優先し、同数なら休みで決める(残る同順位はランダム)。
 //  ・休む人数が出場人数以下のチーム: 前のラウンドで休んだ人を必ず出す(連続休みなし)。
 //    それ以外は順位を付けないので、毎回ちがう顔ぶれになりやすい。
 //  ・休む人数のほうが多いチーム: 連続休みは避けられないので、休みが長い人から順に出す。
-function pick(ids, need, games, last, r) {
+function pick(ids, need, games, last, r, ext, k) {
   var order = shuffle(ids.slice());
   var loose = ids.length <= 2 * need;
   order.sort(function (a, b) {
@@ -274,6 +309,7 @@ function pick(ids, need, games, last, r) {
   });
   var sel = shuffle(order.slice(0, need));
   var rest = order.slice(need).sort(function (a, b) { return a - b; });
+  if (k && r > 0) mixSwap(sel, rest, games, last, ext, r, k);
   for (var s = 0; s < sel.length; s++) { games[sel[s]]++; last[sel[s]] = r; }
   return { sel: sel, rest: rest };
 }
@@ -281,14 +317,15 @@ function pick(ids, need, games, last, r) {
 function buildOnce(nA, nB, C, R) {
   var n = nA + nB;
   var st = newState(n, C);
-  var games = new Array(n).fill(0), last = new Array(n).fill(-1);
+  var games = new Array(n).fill(0), last = new Array(n).fill(-1), ext = new Array(n).fill(0);
+  var kA = mixFactor(nA, C), kB = mixFactor(nB, C);
   var idsA = [], idsB = [], i;
   for (i = 0; i < nA; i++) idsA.push(i);
   for (i = 0; i < nB; i++) idsB.push(nA + i);
   var schedule = [];
   for (var r = 0; r < R; r++) {
-    var a = pick(idsA, 2 * C, games, last, r);
-    var b = pick(idsB, 2 * C, games, last, r);
+    var a = pick(idsA, 2 * C, games, last, r, ext, kA);
+    var b = pick(idsB, 2 * C, games, last, r, ext, kB);
     schedule.push({ courts: buildRound(st, a.sel, b.sel, C), rest: a.rest.concat(b.rest) });
   }
   return { schedule: schedule, st: st };
@@ -467,7 +504,14 @@ if (typeof document !== "undefined") {
     return wrap;
   }
 
+  // 顔ぶれ固定の対策を使う人数なら、入力欄と組み合わせ表の間にお知らせを出す
+  function updateNotice() {
+    var on = !!(current && (mixFactor(current.nA, current.C) || mixFactor(current.nB, current.C)));
+    $("notice").hidden = !on;
+  }
+
   function render() {
+    updateNotice();
     var d = current, n = d.nA + d.nB;
     var root = $("result");
     root.textContent = "";
